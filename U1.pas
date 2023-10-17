@@ -1,0 +1,950 @@
+unit U1;
+
+interface
+
+uses
+  Windows, Messages, SysUtils, Classes, Graphics, Controls, Forms,
+  Math, Dialogs, Buttons, StdCtrls, ExtCtrls, Jpeg, AppEvnts;
+
+type
+  PRGB = ^TRGB;
+  TRGB = packed record
+   R, G, B: Byte;
+  end;
+
+  PCMYK = ^TCMYK;
+  TCMYK = packed record
+    C, M, Y, K: Byte;
+  end;
+
+  PCMYK16 = ^TCMYK16;
+  TCMYK16 = packed record
+    C, M, Y, K: Word;
+  end;
+
+  PBGR = ^TBGR;
+  TBGR = packed record
+   B, G, R: Byte;
+  end;
+
+  PRGBWord = ^TRGBWord;
+  TRGBWord = record
+   R, G, B: Word;
+  end;
+
+  TPSDHeader = packed record
+    Signature: array[0..3] of Char;
+    Version: Word;
+    Reserved: array[0..5] of Byte;
+    Channels: Word;
+    Rows,
+    Columns: Cardinal;
+    Depth: Word;
+    Mode: Word;
+  end;
+
+  TPSDGraphic = class(TBitmap)
+  private
+    FPalette: array[0..767] of Byte;
+    procedure MakePalette(BPS: Byte; Mode: Integer);
+  public
+    procedure LoadFromStream(Stream: TStream); override;
+  end;
+
+  TPackbitsRLE = class
+  public
+    procedure Decode(var Source: Pointer; Dest: Pointer; PackedSize, UnpackedSize: Integer);
+  end;
+
+type
+  TFZN = class(TForm)
+    IBG: TImage;
+    P1: TPanel;
+    P2: TPanel;
+    L2: TLabel;
+    B3: TSpeedButton;
+    B2: TSpeedButton;
+    B1: TSpeedButton;
+    L1: TLabel;
+    E1: TEdit;
+    B4: TSpeedButton;
+    B5: TSpeedButton;
+    P3: TPanel;
+    P4: TPanel;
+    LB: TListBox;
+    B6: TSpeedButton;
+    OD: TOpenDialog;
+    SD: TSaveDialog;
+    AE: TApplicationEvents;
+    BCL: TSpeedButton;
+    BHSL: TSpeedButton;
+    procedure FormCreate(Sender: TObject);
+    procedure FormDestroy(Sender: TObject);
+    procedure B3MouseDown(Sender: TObject; Button: TMouseButton;
+      Shift: TShiftState; X, Y: Integer);
+    procedure P2MouseDown(Sender: TObject; Button: TMouseButton;
+      Shift: TShiftState; X, Y: Integer);
+    procedure B6Click(Sender: TObject);
+    procedure AEException(Sender: TObject; E: Exception);
+    procedure B1Click(Sender: TObject);
+    procedure B4Click(Sender: TObject);
+    procedure B5Click(Sender: TObject);
+    procedure E1Change(Sender: TObject);
+    procedure B2Click(Sender: TObject);
+    procedure B3Click(Sender: TObject);
+    procedure P4MouseDown(Sender: TObject; Button: TMouseButton;
+      Shift: TShiftState; X, Y: Integer);
+    procedure LBClick(Sender: TObject);
+    procedure FormShow(Sender: TObject);
+    procedure BCLClick(Sender: TObject);
+    procedure BHSLClick(Sender: TObject);
+  private
+    { Zephio 2013 }
+  public
+    { Public declarations }
+    procedure GfxSpliter;
+    procedure GfXColorProcessor;
+  end;
+
+type
+   TRGBArray = array[0..0] of TRGBTriple;
+   pRGBArray = ^TRGBArray;
+
+const
+   DFN : String = 'ZN Simple Anaglyph Maker v0.0.0.2 Beta';
+   PSD_BITMAP = 0;
+   PSD_GRAYSCALE = 1;
+   PSD_INDEXED = 2;
+   PSD_RGB = 3;
+   PSD_CMYK = 4;
+   PSD_MULTICHANNEL = 7;
+   PSD_DUOTONE = 8;
+   PSD_LAB = 9;
+   PSD_COMPRESSION_NONE = 0;
+   PSD_COMPRESSION_RLE = 1;
+
+var
+   FZN: TFZN;
+   TLP : TPSDGraphic;
+   TLJ : TJpegImage;
+   CBER : TCheckBox;
+   ARL, ALL, AOL : pRGBarray;
+   TOGfx, TRGfx, TLGfx, TLAF, TLB, FBG, BBS : TBitmap;
+
+implementation
+
+{$R *.dfm}
+
+procedure CIELAB2BGR(LSource, aSource, bSource: PByte; Target: Pointer; BitsPerSample: Byte; Count: Cardinal); overload;
+var
+ FinalR,FinalG, FinalB: Integer;
+ l, a, b, X, Y, Z, T, YYn3: Double;
+ TargetPtr: PByte;
+ PixelCount: Cardinal;
+begin
+ TargetPtr := Target;
+ PixelCount := Count div 3;
+
+ while PixelCount > 0 do
+  begin
+   L := LSource^ / 2.55;
+   Inc(LSource);
+   a := ShortInt(aSource^);
+   Inc(aSource);
+   b := ShortInt(bSource^);
+   Inc(bSource);
+
+   YYn3 := (L + 16) / 116;
+   if L < 7.9996 then
+    begin
+     Y := L / 903.3;
+     X := a / 3893.5 + Y;
+     Z := Y - b / 1557.4;
+    end
+   else
+    begin
+     T := YYn3 + a / 500;
+     X := T * T * T;
+     Y := YYn3 * YYn3 * YYn3;
+     T := YYn3 - b / 200;
+     Z := T * T * T;
+    end;
+
+   FinalR := Round(255 * ( 2.998 * X - 1.458 * Y - 0.541 * Z));
+   FinalG := Round(255 * (-0.952 * X + 1.893 * Y + 0.059 * Z));
+   FinalB := Round(255 * ( 0.099 * X - 0.198 * Y + 1.099 * Z));
+
+   TargetPtr^ := Max(0, Min(255, FinalB));
+   Inc(TargetPtr);
+   TargetPtr^ := Max(0, Min(255, FinalG));
+   Inc(TargetPtr);
+   TargetPtr^ := Max(0, Min(255, FinalR));
+   Inc(TargetPtr);
+
+   Dec(PixelCount);
+  end;
+end;
+
+
+procedure CMYK2BGR(C, M, Y, K, Target: Pointer; BitsPerSample: Byte; Count: Cardinal); overload;
+var
+ R, G, B: Integer;
+ C8, M8, Y8, K8: PByte;
+ C16, M16, Y16, K16: PWord;
+ I: Integer;
+ TargetPtr: PByte;
+begin
+ case BitsPerSample of
+  8:
+   begin
+    C8 := C;
+    M8 := M;
+    Y8 := Y;
+    K8 := K;
+    TargetPtr := Target;
+    Count := Count div 4;
+    for I := 0 to Count - 1 do
+     begin
+      R := 255 - (C8^ - MulDiv(C8^, K8^, 255) + K8^);
+      G := 255 - (M8^ - MulDiv(M8^, K8^, 255) + K8^);
+      B := 255 - (Y8^ - MulDiv(Y8^, K8^, 255) + K8^);
+      TargetPtr^ := Max(0, Min(255, B));
+      Inc(TargetPtr);
+      TargetPtr^ := Max(0, Min(255, G));
+      Inc(TargetPtr);
+      TargetPtr^ := Max(0, Min(255, R));
+      Inc(TargetPtr);
+      Inc(C8);
+      Inc(M8);
+      Inc(Y8);
+      Inc(K8);
+     end;
+   end;
+  16:
+   begin
+    C16 := C;
+    M16 := M;
+    Y16 := Y;
+    K16 := K;
+    TargetPtr := Target;
+    Count := Count div 4;
+    for I := 0 to Count - 1 do
+     begin
+      R := 255 - (C16^ - MulDiv(C16^, K16^, 65535) + K16^) shr 8;
+      G := 255 - (M16^ - MulDiv(M16^, K16^, 65535) + K16^) shr 8;
+      B := 255 - (Y16^ - MulDiv(Y16^, K16^, 65535) + K16^) shr 8;
+      TargetPtr^ := Max(0, Min(255, B));
+      Inc(TargetPtr);
+      TargetPtr^ := Max(0, Min(255, G));
+      Inc(TargetPtr);
+      TargetPtr^ := Max(0, Min(255, R));
+      Inc(TargetPtr);
+      Inc(C16);
+      Inc(M16);
+      Inc(Y16);
+      Inc(K16);
+     end;
+   end;
+ end;
+end;
+
+procedure RGB2BGR(R, G, B, Target: Pointer; BitsPerSample: Byte; Count: Cardinal); overload;
+var
+ R8, G8, B8: PByte;
+ R16, G16, B16: PWord;
+ TargetRun: PByte;
+begin
+ Count := Count div 3;
+ case BitsPerSample of
+  8:
+   begin
+    R8 := R;
+    G8 := G;
+    B8 := B;
+    TargetRun := Target;
+    while Count > 0 do
+     begin
+      TargetRun^ := B8^;
+      Inc(B8);
+      Inc(TargetRun);
+      TargetRun^ := G8^;
+      Inc(G8);
+      Inc(TargetRun);
+      TargetRun^ := R8^;
+      Inc(R8);
+      Inc(TargetRun);
+      Dec(Count);
+     end;
+   end;
+  16:
+   begin
+    R16 := R;
+    G16 := G;
+    B16 := B;
+    TargetRun := Target;
+    while Count > 0 do
+     begin
+      TargetRun^ := B16^ shr 8;
+      Inc(B16);
+      Inc(TargetRun);
+      TargetRun^ := G16^ shr 8;
+      Inc(G16);
+      Inc(TargetRun);
+      TargetRun^ := R16^ shr 8;
+      Inc(R16);
+      Inc(TargetRun);
+      Dec(Count);
+     end;
+   end;
+  end;
+end;
+
+procedure SwapShort(P: PWord; Count: Cardinal);
+asm
+ @@Loop:
+  MOV CX, [EAX]
+  XCHG CH, CL
+  MOV [EAX], CX
+  ADD EAX, 2
+  DEC EDX
+  JNZ @@Loop
+end;
+
+procedure SwapLong(P: PInteger; Count: Cardinal); overload;
+asm
+ @@Loop:
+  MOV ECX, [EAX]
+  BSWAP ECX
+  MOV [EAX], ECX
+  ADD EAX, 4
+  DEC EDX
+  JNZ @@Loop
+end;
+
+function SwapLong(Value: Cardinal): Cardinal; overload;
+asm
+ BSWAP EAX
+end;
+
+procedure TPackbitsRLE.Decode(var Source: Pointer; Dest: Pointer; PackedSize, UnpackedSize: Integer);
+var
+ SourcePtr,TargetPtr: PByte;
+ N: SmallInt;
+begin
+ TargetPtr := Dest;
+ SourcePtr := Source;
+ while PackedSize > 0 do
+  begin
+   N := ShortInt(SourcePtr^);
+   Inc(SourcePtr);
+   Dec(PackedSize);
+   if N < 0 then
+    begin
+     if N = -128 then Continue;
+     N := -N + 1;
+     FillChar(TargetPtr^, N, SourcePtr^);
+     Inc(SourcePtr);
+     Inc(TargetPtr, N);
+     Dec(PackedSize);
+    end
+   else
+    begin
+     Move(SourcePtr^, TargetPtr^, N + 1);
+     Inc(TargetPtr, N + 1);
+     Inc(SourcePtr, N + 1);
+     Dec(PackedSize, N + 1);
+    end;
+  end;
+end;
+
+procedure TPSDGraphic.MakePalette(BPS: Byte; Mode: Integer);
+var
+ Pal: TMaxLogPalette;
+ hpal: HPALETTE;
+ I: Integer;
+ EntryCount: Word;
+begin
+ case BPS of
+  1:
+   EntryCount := 1;
+  4:
+   EntryCount := 15;
+  else
+   EntryCount := 255;
+ end;
+
+ Pal.palVersion := $300;
+ Pal.palNumEntries := 1 + EntryCount;
+ case BPS of
+  1:
+   begin
+    Pal.palPalEntry[0].peRed := 255;
+    Pal.palPalEntry[0].peGreen  := 255;
+    Pal.palPalEntry[0].peBlue := 255;
+    Pal.palPalEntry[0].peFlags := 0;
+    Pal.palPalEntry[1].peRed := 0;
+    Pal.palPalEntry[1].peGreen  := 0;
+    Pal.palPalEntry[1].peBlue := 0;
+    Pal.palPalEntry[1].peFlags := 0;
+   end;
+  else
+   case Mode  of
+    PSD_DUOTONE,
+    PSD_GRAYSCALE:
+     for I :=  0 to EntryCount do
+      begin
+       Pal.palPalEntry[I].peRed := I;
+       Pal.palPalEntry[I].peGreen := I;
+       Pal.palPalEntry[I].peBlue := I;
+       Pal.palPalEntry[I].peFlags := 0;
+      end;
+    else
+     for I := 0 to EntryCount do
+      begin
+       Pal.palPalEntry[I].peRed := FPalette[0 * 256 + I];
+       Pal.palPalEntry[I].peGreen := FPalette[1 * 256 + I];
+       Pal.palPalEntry[I].peBlue := FPalette[2 * 256 + I];
+       Pal.palPalEntry[I].peFlags := 0;
+      end;
+   end;
+  end;
+ hpal := CreatePalette(PLogPalette(@Pal)^);
+ if hpal <> 0 then Palette := hpal;
+end;
+
+procedure TPSDGraphic.LoadFromStream(Stream: TStream);
+var
+  Header: TPSDHeader;
+  Count: Integer;
+  Compression: Word;
+  Decoder: TPackbitsRLE;
+  RLELength: array of Word;
+
+  Y: Integer;
+  BPS: Integer;
+  ChannelSize: Integer;
+  RawBuffer, Buffer: Pointer;
+  Run1, Run2, Run3, Run4: PByte;
+begin
+ with Stream do
+  begin
+   ReadBuffer(Header, SizeOf(Header));
+   if Header.Signature <> '8BPS' then raise Exception.Create('Неверный файл');
+   with Header do
+    begin
+     Channels := Swap(Channels);
+     Rows := SwapLong(Rows);
+     Columns := SwapLong(Columns);
+     Depth := Swap(Depth);
+     Mode := Swap(Mode);
+    end;
+
+   case Header.Mode of
+    PSD_BITMAP: PixelFormat := pf1Bit;
+    PSD_DUOTONE, PSD_GRAYSCALE, PSD_INDEXED: PixelFormat := pf8Bit;
+    PSD_RGB: PixelFormat := pf24Bit;
+    PSD_CMYK: PixelFormat := pf24Bit;
+    PSD_MULTICHANNEL: ;
+    PSD_LAB: PixelFormat := pf24Bit;
+   end;
+  ReadBuffer(Count, SizeOf(Count));
+  Count := SwapLong(Count);
+
+  if Header.Mode in [PSD_BITMAP, PSD_GRAYSCALE, PSD_INDEXED] then
+   begin
+    if Header.Mode = PSD_INDEXED then ReadBuffer(FPalette, Count);
+    MakePalette(Header.Depth, Header.Mode);
+   end;
+
+  Width := Header.Columns;
+  Height := Header.Rows;
+
+  ReadBuffer(Count, SizeOf(Count));
+  Count := SwapLong(Count);
+  Seek(Count, soFromCurrent);
+  ReadBuffer(Count, SizeOf(Count));
+  Count := SwapLong(Count);
+  Seek(Count, soFromCurrent);
+
+  RawBuffer := nil;
+
+  ReadBuffer(Compression, SizeOf(Compression));
+  Compression := Swap(Compression);
+  if Compression = 1 then
+   begin
+    Decoder := TPackbitsRLE.Create;
+    SetLength(RLELength, Header.Rows * Header.Channels);
+    ReadBuffer(RLELength[0], 2 * Length(RLELength));
+    SwapShort(@RLELength[0], Header.Rows * Header.Channels);
+   end
+  else
+   Decoder := nil;
+
+  try
+   case Header.Mode of
+    PSD_BITMAP,PSD_DUOTONE,PSD_GRAYSCALE,PSD_INDEXED:
+     begin
+      if Assigned(Decoder) then
+       begin
+        Count := 0;
+        for Y := 0 to Height - 1 do Inc(Count, RLELength[Y]);
+         GetMem(RawBuffer, Count);
+        ReadBuffer(RawBuffer^, Count);
+        Run1 := RawBuffer;
+        for Y := 0 to Height - 1 do
+         begin
+          Count := RLELength[Y];
+          Decoder.Decode(Pointer(Run1), ScanLine[Y], Count, Width);
+          Inc(Run1, Count);
+         end;
+        FreeMem(RawBuffer);
+       end
+      else 
+       for Y := 0 to Height - 1 do
+        ReadBuffer(ScanLine[Y]^, Width);
+     end;
+    PSD_RGB,PSD_CMYK,PSD_LAB:
+     begin
+      BPS := Header.Depth div 8;
+      ChannelSize := BPS * Width * Height;
+
+      GetMem(Buffer, Header.Channels * ChannelSize);
+
+      if Assigned(Decoder) then
+       begin
+        Count := 0;
+        for Y := 0 to High(RLELength) do
+         Inc(Count, RLELength[Y]);
+        Count := Count * BPS;
+        GetMem(RawBuffer, Count);
+        Run1 := RawBuffer;
+        ReadBuffer(RawBuffer^, Count);
+        Decoder.Decode(RawBuffer, Buffer, Count, Header.Channels * ChannelSize);
+        FreeMem(RawBuffer);
+       end
+      else
+       begin
+        ReadBuffer(Buffer^, Header.Channels * ChannelSize);
+        if BPS = 2 then
+         SwapShort(Buffer, Header.Channels * ChannelSize div 2);
+       end;
+
+      case Header.Mode of
+       PSD_RGB:
+        begin
+         Run1 := Buffer;
+         Run2 := Run1; Inc(Run2, ChannelSize);
+         Run3 := Run2; Inc(Run3, ChannelSize);
+         for Y := 0 to Height - 1 do
+          begin
+           RGB2BGR(Run1, Run2, Run3, Scanline[Y], Header.Depth, 3 * Width);
+           Inc(Run1, BPS * Width);
+           Inc(Run2, BPS * Width);
+           Inc(Run3, BPS * Width);
+          end;
+        end;
+       PSD_CMYK:
+        begin
+         Run1 := Buffer;
+         for Y := 1 to 4 * ChannelSize do
+          begin
+           Run1^ := 255 - Run1^;
+           Inc(Run1);
+          end;
+
+         Run1 := Buffer;
+         Run2 := Run1; Inc(Run2, ChannelSize);
+         Run3 := Run2; Inc(Run3, ChannelSize);
+         Run4 := Run3; Inc(Run4, ChannelSize);
+         for Y := 0 to Height - 1 do
+          begin
+           CMYK2BGR(Run1, Run2, Run3, Run4, ScanLine[Y], Header.Depth, 4 * Width);
+           Inc(Run1, BPS * Width);
+           Inc(Run2, BPS * Width);
+           Inc(Run3, BPS * Width);
+           Inc(Run4, BPS * Width);
+          end;
+        end;
+       PSD_LAB:
+        begin
+         Run1 := Buffer; Inc(Run1, ChannelSize);
+         for Y := 1 to 2 * ChannelSize do
+          begin
+           Run1^ := Run1^ - 128;
+           Inc(Run1);
+          end;
+         Run1 := Buffer;
+         Run2 := Run1; Inc(Run2, ChannelSize);
+         Run3 := Run2; Inc(Run3, ChannelSize);
+         for Y := 0 to Height - 1 do
+          begin
+           CIELAB2BGR(Run1, Run2, Run3, ScanLine[Y], Header.Depth, 3 * Width);
+           Inc(Run1, BPS * Width);
+           Inc(Run2, BPS * Width);
+           Inc(Run3, BPS * Width);
+          end;
+        end;
+      end;
+     end;
+   end;
+  finally
+   Decoder.Free;
+  end;
+ end;
+end;
+
+//------------------------------------------------------------------------------
+procedure TFZN.GfxSpliter;
+var
+   X, Y : Integer;
+begin
+   TRGfx.Assign(TOGfx);
+   TLGfx.Assign(TOGfx);
+//-------------------------
+for Y := 0 to TOGfx.Height - 1 do
+begin
+   ARL := TRGfx.Scanline[Y];
+   ALL := TLGfx.Scanline[Y];
+   AOL := TOGfx.Scanline[Y];
+//-------------------------
+for X := 0 to TOGfx.Width - 1 do
+begin
+case B3.Tag of
+   0 :
+   ALL[X] := AOL[X + StrToInt(E1.Text)];
+   1 :
+   ARL[X] := AOL[X + StrToInt(E1.Text)];
+end;
+
+end;
+
+end;
+   TRGfx.Assign(TRGfx);
+   TLGfx.Assign(TLGfx);
+   GfXColorProcessor;
+end;
+
+procedure TFZN.GfXColorProcessor;
+var
+   X, Y : integer;
+begin
+   TOGfx.Assign(TRGfx);
+for Y := 0 to TRGfx.Height - 1 do
+begin
+   ARL := TOGfx.Scanline[Y];
+   AOL := TLGfx.Scanline[Y];
+//-------------------------
+for x := 0 to TRGfx.Width - 1 do
+begin
+   ARL[x].RGBtRed := AOL[X].RGBtRed;
+end;
+
+end;
+   IBG.Picture.bitmap.Assign(TOGfx);
+end;
+
+function ATS(S: string; Chr: Char): string;
+var  
+  I: Integer; 
+begin 
+  Result := S; 
+  I := Length(S) - 2; 
+  while I > 1 do  
+  begin 
+    Insert(Chr, Result, I); 
+    I := I - 3; 
+  end; 
+end;
+
+function GFS(FTE : String; BKB : Boolean): String;
+var
+   SR : TSearchRec;
+   Path : String;
+   IRV, I : Integer;
+begin
+   Path := ExpandFileName(FTE);
+try
+   IRV := FindFirst(ExpandFileName(FTE), faAnyFile, SR);
+if IRV = 0 then
+   I := SR.Size
+else
+   I := -1;
+finally
+   SysUtils.FindClose(SR);
+end;
+   Result := IntToStr(i);
+end;
+
+procedure TFZN.FormCreate(Sender: TObject);
+begin
+//------------------------------------------------------------------------------>
+   TOGfx := TBitmap.Create;
+   TRGfx := TBitmap.Create;
+   TLGfx := TBitmap.Create;
+   BBS := TBitmap.Create;
+   FBG := TBitmap.Create;
+   TLJ := TJpegImage.Create;
+   TLB := TBitmap.Create;
+   TLP := TPSDGraphic.Create;
+   TLAF := TBitmap.Create;
+//------------------------------------------------------------------------------>
+   SendMessage(LB.Handle, LB_SetHorizontalExtent, 1000, 0);
+// Brush Button----------------------------------------------------------------->
+   BBS.LoadFromResourceName(HInstance, 'BS');
+   B3.Glyph.Canvas.CopyRect(Rect(0, 0, 20, 20),  //Left, Top, Right, Bottom
+                      BBS.Canvas,
+                      Rect(20, 0, 40, 20)); //Left, Top, Right, Bottom
+// Brush Form------------------------------------------------------------------->
+   FBG.LoadFromResourceName(HInstance, 'BG');
+   FZN.Brush.Bitmap := FBG;
+//------------------------------------------------------------------------------>
+   Screen.Cursors[1] := LoadCursor(HInstance, 'MC');
+   FZN.Cursor := 1;
+   P1.Cursor := 1;
+   P2.Cursor := 1;
+   P3.Cursor := 1;
+   P4.Cursor := 1;
+// Silent Report---------------------------------------------------------------->
+   CBER := TCheckBox.Create(Self);
+   CBER.Checked := true;
+// Title------------------------------------------------------------------------>
+   Application.Title := DFN;
+   FZN.Caption := DFN;
+   L2.Caption := 'Dimensions : 0 x 0 Pixel'+#13#10+'Size : 0 Bytes';
+   Application.HintColor := ClGray;
+// Anti Flicker----------------------------------------------------------------->
+   DoubleBuffered := true;
+end;
+
+procedure TFZN.FormDestroy(Sender: TObject);
+begin
+   TRGfx.Free;
+   TLGfx.Free;
+   TOGfx.Free;
+   TLJ.Free;
+   TLB.Free;
+   TLP.Free;
+   TLAF.Free;
+   FBG.Free;
+   BBS.Free;
+   CBER.Free;
+end;
+
+procedure TFZN.B3MouseDown(Sender: TObject; Button: TMouseButton;
+  Shift: TShiftState; X, Y: Integer);
+begin
+if Button <> MBLeft then
+   Exit
+else
+   B3.Tag := B3.Tag + 1;
+if B3.Tag = 2 then
+   B3.Tag := 0;
+case B3.Tag of
+   0 :
+   B3.Glyph.Canvas.CopyRect(Rect(0, 0, 20, 20),  //Left, Top, Right, Bottom
+                      BBS.Canvas,
+                      Rect(20, 0, 40, 20)); //Left, Top, Right, Bottom
+   1 :
+   B3.Glyph.Canvas.CopyRect(Rect(0, 0, 20, 20),  //Left, Top, Right, Bottom
+                      BBS.Canvas,
+                      Rect(0, 0, 20, 20)); //Left, Top, Right, Bottom
+end;
+
+end;
+
+procedure TFZN.P2MouseDown(Sender: TObject; Button: TMouseButton;
+  Shift: TShiftState; X, Y: Integer);
+begin
+if Button <> MBLeft then
+   Exit
+else
+   ReleaseCapture;
+   P1.Perform(WM_SysCommand, $F012, 0);
+end;
+
+procedure TFZN.B6Click(Sender: TObject);
+begin
+   P3.Visible := not P3.Visible;
+end;
+
+procedure TFZN.AEException(Sender: TObject; E: Exception);
+var
+   LogFile : TextFile;
+begin
+if not DirectoryExists(ExtractFilePath(Application.ExeName) + 'Log') then
+   CreateDir(ExtractFilePath(Application.ExeName) + 'Log');
+//------------------------------------------------------------------------------>
+   AssignFile(LogFile, ExtractFilePath(Application.ExeName) + 'Log\Report.log');
+if FileExists(ExtractFilePath(Application.ExeName) + 'Log\Report.log')then
+   Append(LogFile)
+else
+   Rewrite(LogFile);
+   Writeln(LogFile, 'Date : ' + DateToStr(Now) + ', Time : ' + TimeToStr(Now) + ', Message : '+E.Message);
+   LB.AddItem('Date : ' + DateToStr(Now) + ', Time : ' + TimeToStr(Now) + ', Message : '+E.Message, Self);
+//------------------------------------------------------------------------------>
+if not CBER.Checked then
+   Application.ShowException(E);
+   CloseFile(LogFile);
+end;
+
+procedure TFZN.B1Click(Sender: TObject);
+begin
+   OD.FileName := '';
+if not OD.Execute then
+begin
+   Exit
+end
+else
+begin
+   FZN.Caption := DFN + ' - [Loading...]';
+if LowerCase(ExtractFileExt(OD.FileName)) = '.psd' then
+begin
+   TLP.LoadFromFile(OD.FileName);
+   TLAF.Assign(TLP);
+end
+else
+begin
+if (LowerCase(ExtractFileExt(OD.FileName)) = '.jpg') or
+   (LowerCase(ExtractFileExt(OD.FileName)) = '.jpeg') then
+begin
+   TLJ.LoadFromFile(OD.FileName);
+   TLAF.Assign(TLJ);
+end
+else
+begin
+if LowerCase(ExtractFileExt(OD.FileName)) = '.bmp' then
+begin
+   TLB.LoadFromFile(OD.FileName);
+   TLAF.Assign(TLB);
+end;
+
+end;
+
+end;
+
+end;
+   TOGfx.Assign(TLAF);
+   IBG.Picture.Bitmap.Assign(TLAF);
+   FZN.Caption := DFN + ' - ['+ChangeFileExt(ExtractFileName(OD.FileName), ']');
+   L2.Caption := 'Dimensions : '+IntToStr(TLAF.Width)+' x '+IntToStr(TLAF.Height)+' Pixel'+#13#10+'Size : ' + ATS(GFS(OD.FileName, true), '.')+' Bytes';
+end;
+
+procedure TFZN.B4Click(Sender: TObject);
+begin
+   TOGfx.Assign(TLAF);
+   GfxSpliter;
+end;
+
+procedure TFZN.B5Click(Sender: TObject);
+var
+   MsgText, MsgCaption : String;
+   NL : String;
+   MsgType, UserResp : integer;
+begin
+   NL := #13 + #10;   {New Lin}
+   MsgCaption := '.: About :.';
+   MsgText := MsgText + 'Application Name : ZN Simple Anaglyph Maker v0.0.0.2' + NL;
+   MsgText := MsgText + 'Platform : Win XP/Vista/Seven [X86 & X64]' + NL;
+   MsgText := MsgText + 'License : Freeware' + NL;
+   MsgText := MsgText + 'Coded By : Zephio/X-88' + NL;
+   MsgText := MsgText + 'E-M@il : x.88@musician.org' + NL;
+   MsgText := MsgText + 'Blog : http://amateur-guide.blogspot.com' + NL;
+   MsgText := MsgText + 'Sfx By : Dual Trax' + NL;
+   MsgText := MsgText + 'Thx to : Marko Paunovic [Help Correct the Code]' + NL;
+   MsgText := MsgText + 'Copyright © 2013, ZN Art.';
+   MsgType := MB_OK + MB_ICONINFORMATION + MB_DEFBUTTON1 + MB_APPLMODAL;
+   UserResp := MessageBox( Handle, PChar(MsgText), PChar(MsgCaption), MsgType);
+ { UserResp := MessageBox( Handle, PChar(MsgText), '.: About :.', $40); }
+end;
+
+procedure TFZN.E1Change(Sender: TObject);
+begin
+if StrToInt(E1.Text) < 0 then
+   E1.Text := '0'
+else
+if StrToInt(E1.Text) > 100 then
+   E1.Text := '100';
+end;
+
+procedure TFZN.B2Click(Sender: TObject);
+var
+   STJ : TJpegImage;
+   STB : TBitmap;
+   CTB : TBitmap;
+begin
+   SD.FileName := '';
+if not SD.Execute then
+   Exit
+else
+   CTB := TBitmap.Create;
+   CTB.Height := IBG.Picture.Bitmap.Height;
+   CTB.Width := IBG.Picture.Bitmap.Width;
+   CTB.Canvas.CopyRect(Rect(0, 0, IBG.Picture.Bitmap.Width, IBG.Picture.Bitmap.Height),
+                      IBG.Canvas,
+                      Rect(0, 0, IBG.Picture.Bitmap.Width - StrToInt(E1.Text), IBG.Picture.Bitmap.Height));
+if LowerCase(ExtractFileExt(SD.FileName)) = '.jpg' then
+begin
+   STJ := TJpegImage.Create;
+   STJ.Assign(CTB);
+   STJ.CompressionQuality := 100;
+   STJ.SaveToFile(SD.FileName);
+   STJ.Free;
+end
+else
+begin
+if LowerCase(ExtractFileExt(SD.FileName)) = '.bmp' then
+begin
+   STB := TBitmap.Create;
+   STB.PixelFormat := PF24Bit;
+   STB.Assign(CTB);
+   STB.SaveToFile(SD.FileName);
+   STB.Free;
+end;
+   FZN.Caption := DFN + ' - ['+ChangeFileExt(ExtractFileName(SD.FileName), ']');
+   CTB.Free;
+end;
+
+end;
+
+procedure TFZN.B3Click(Sender: TObject);
+begin
+   TOGfx.Assign(TLAF);
+   GfxSpliter;
+end;
+
+procedure TFZN.P4MouseDown(Sender: TObject; Button: TMouseButton;
+  Shift: TShiftState; X, Y: Integer);
+begin
+if Button <> MBLeft then
+   Exit
+else
+   ReleaseCapture;
+   P3.Perform(WM_SysCommand, $F012, 0);
+end;
+
+procedure TFZN.LBClick(Sender: TObject);
+begin
+if LB.Items[LB.ItemIndex] = '' then
+   Exit
+else
+   LB.Hint := LB.Items[LB.ItemIndex];
+end;
+
+procedure TFZN.FormShow(Sender: TObject);
+begin
+//------------------------------------------------------------------------------>
+   OD.InitialDir := ExtractFilePath(Application.ExeName);
+end;
+
+procedure TFZN.BCLClick(Sender: TObject);
+begin
+   LB.Clear;
+   LB.Hint := '';
+end;
+
+procedure TFZN.BHSLClick(Sender: TObject);
+begin
+   P3.Visible := not P3.Visible;
+end;
+
+end.
